@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 def import_model_class_by_version(version: str) -> Type[Union['MoGeModelV1', 'MoGeModelV2']]:
     assert version in ['v1', 'v2'], f'Unsupported model version: {version}'
-    
+
     try:
         module = importlib.import_module(f'.{version}', __package__)
     except ModuleNotFoundError:
@@ -16,3 +16,11 @@ def import_model_class_by_version(version: str) -> Type[Union['MoGeModelV1', 'Mo
 
     cls = getattr(module, 'MoGeModel')
     return cls
+
+
+from .torchscript import TorchScriptMoGeModel
+
+__all__ = [
+    'import_model_class_by_version',
+    'TorchScriptMoGeModel',
+]

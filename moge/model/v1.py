@@ -125,9 +125,12 @@ class Head(nn.Module):
             uv = normalized_view_plane_uv(width=x.shape[-1], height=x.shape[-2], aspect_ratio=img_w / img_h, dtype=x.dtype, device=x.device)
             uv = uv.permute(2, 0, 1).unsqueeze(0).expand(x.shape[0], -1, -1, -1)
             x = torch.cat([x, uv], dim=1)
-            for layer in block:
-                x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
-        
+            if torch.jit.is_scripting():
+                x = block(x)
+            else:
+                for layer in block:
+                    x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
+
         # (patch_h * 8, patch_w * 8) -> (img_h, img_w)
         x = F.interpolate(x, (img_h, img_w), mode="bilinear", align_corners=False)
         uv = normalized_view_plane_uv(width=x.shape[-1], height=x.shape[-2], aspect_ratio=img_w / img_h, dtype=x.dtype, device=x.device)
@@ -135,10 +138,16 @@ class Head(nn.Module):
         x = torch.cat([x, uv], dim=1)
 
         if isinstance(self.output_block, nn.ModuleList):
-            output = [torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False) for block in self.output_block]
+            if torch.jit.is_scripting():
+                output = [block(x) for block in self.output_block]
+            else:
+                output = [torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False) for block in self.output_block]
         else:
-            output = torch.utils.checkpoint.checkpoint(self.output_block, x, use_reentrant=False)
-        
+            if torch.jit.is_scripting():
+                output = self.output_block(x)
+            else:
+                output = torch.utils.checkpoint.checkpoint(self.output_block, x, use_reentrant=False)
+
         return output
 
 
@@ -285,18 +294,33 @@ class MoGeModel(nn.Module):
         output = self.head(features, image)
         points, mask = output
         
-        # Make sure fp32 precision for output
-        with torch.autocast(device_type=image.device.type, dtype=torch.float32):
-            # Resize to original resolution
-            points = F.interpolate(points, (original_height, original_width), mode='bilinear', align_corners=False, antialias=False)
-            mask = F.interpolate(mask, (original_height, original_width), mode='bilinear', align_corners=False, antialias=False)
-            
-            # Post-process points and mask
-            points, mask = points.permute(0, 2, 3, 1), mask.squeeze(1)
-            points = self._remap_points(points)     # slightly improves the performance in case of very large output values
+        points, mask = self._resize_and_postprocess(points, mask, original_height, original_width)
 
         return_dict = {'points': points, 'mask': mask}
         return return_dict
+
+    def _resize_and_postprocess(
+        self,
+        points: torch.Tensor,
+        mask: torch.Tensor,
+        original_height: int,
+        original_width: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if torch.jit.is_scripting():
+            resized_points = F.interpolate(points, (original_height, original_width), mode='bilinear', align_corners=False, antialias=False)
+            resized_mask = F.interpolate(mask, (original_height, original_width), mode='bilinear', align_corners=False, antialias=False)
+        else:
+            with torch.autocast(device_type=points.device.type, dtype=torch.float32):
+                resized_points = F.interpolate(points, (original_height, original_width), mode='bilinear', align_corners=False, antialias=False)
+                resized_mask = F.interpolate(mask, (original_height, original_width), mode='bilinear', align_corners=False, antialias=False)
+
+        resized_points = resized_points.to(dtype=torch.float32)
+        resized_mask = resized_mask.to(dtype=torch.float32)
+
+        processed_points = resized_points.permute(0, 2, 3, 1)
+        processed_mask = resized_mask.squeeze(1)
+        remapped_points = self._remap_points(processed_points)
+        return remapped_points, processed_mask
 
     @torch.inference_mode()
     def infer(
