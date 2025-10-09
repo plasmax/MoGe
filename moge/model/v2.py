@@ -145,27 +145,60 @@ class MoGeModel(nn.Module):
 
         # Backbones encoding
         features, cls_token = self.encoder(image, base_h, base_w, return_class_token=True)
-        features = [features, None, None, None, None]
+        features_list: List[Optional[torch.Tensor]] = [features, None, None, None, None]
 
         # Concat UVs for aspect ratio input
         for level in range(5):
-            uv = normalized_view_plane_uv(width=base_w * 2 ** level, height=base_h * 2 ** level, aspect_ratio=aspect_ratio, dtype=dtype, device=device)
+            uv = normalized_view_plane_uv(
+                width=base_w * 2 ** level,
+                height=base_h * 2 ** level,
+                aspect_ratio=aspect_ratio,
+                dtype=dtype,
+                device=device,
+            )
             uv = uv.permute(2, 0, 1).unsqueeze(0).expand(batch_size, -1, -1, -1)
-            if features[level] is None:
-                features[level] = uv
+            current_feature = features_list[level]
+            if current_feature is None:
+                features_list[level] = uv
             else:
-                features[level] = torch.concat([features[level], uv], dim=1)
+                features_list[level] = torch.concat([current_feature, uv], dim=1)
 
         # Shared neck
-        features = self.neck(features)
+        neck_features = self.neck(features_list)
 
         # Heads decoding
-        points, normal, mask = (getattr(self, head)(features)[-1] if hasattr(self, head) else None for head in ['points_head', 'normal_head', 'mask_head'])
+        points: Optional[torch.Tensor]
+        normal: Optional[torch.Tensor]
+        mask: Optional[torch.Tensor]
+
+        if hasattr(self, 'points_head'):
+            points_features = self.points_head(neck_features)
+            points = points_features[-1]
+        else:
+            points = None
+
+        if hasattr(self, 'normal_head'):
+            normal_features = self.normal_head(neck_features)
+            normal = normal_features[-1]
+        else:
+            normal = None
+
+        if hasattr(self, 'mask_head'):
+            mask_features = self.mask_head(neck_features)
+            mask = mask_features[-1]
+        else:
+            mask = None
+
         metric_scale = self.scale_head(cls_token) if hasattr(self, 'scale_head') else None
-        
+
         # Resize
-        points, normal, mask = (F.interpolate(v, (img_h, img_w), mode='bilinear', align_corners=False, antialias=False) if v is not None else None for v in [points, normal, mask])
-        
+        if points is not None:
+            points = F.interpolate(points, (img_h, img_w), mode='bilinear', align_corners=False, antialias=False)
+        if normal is not None:
+            normal = F.interpolate(normal, (img_h, img_w), mode='bilinear', align_corners=False, antialias=False)
+        if mask is not None:
+            mask = F.interpolate(mask, (img_h, img_w), mode='bilinear', align_corners=False, antialias=False)
+
         # Remap output
         if points is not None:
             points = points.permute(0, 2, 3, 1)
@@ -178,13 +211,15 @@ class MoGeModel(nn.Module):
         if metric_scale is not None:
             metric_scale = metric_scale.squeeze(1).exp()
 
-        return_dict = {
-            'points': points, 
-            'normal': normal,
-            'mask': mask,
-            'metric_scale': metric_scale
-        }
-        return_dict = {k: v for k, v in return_dict.items() if v is not None}
+        return_dict: Dict[str, torch.Tensor] = {}
+        if points is not None:
+            return_dict['points'] = points
+        if normal is not None:
+            return_dict['normal'] = normal
+        if mask is not None:
+            return_dict['mask'] = mask
+        if metric_scale is not None:
+            return_dict['metric_scale'] = metric_scale
 
         return return_dict
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
@@ -22,10 +22,20 @@ class TorchScriptMoGeModel(nn.Module):
         self,
         version: str = "v1",
         num_tokens: Optional[int] = None,
+        pretrained_model_name_or_path: Optional[str] = None,
+        model_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__()
         model_cls = import_model_class_by_version(version)
-        base_model = model_cls()
+        ctor_kwargs: Dict[str, Any] = {} if model_kwargs is None else dict(model_kwargs)
+
+        if pretrained_model_name_or_path is not None:
+            base_model = model_cls.from_pretrained(
+                pretrained_model_name_or_path,
+                model_kwargs=ctor_kwargs if ctor_kwargs else None,
+            )
+        else:
+            base_model = model_cls(**ctor_kwargs)
         base_model.eval()
         self.model = base_model
 
@@ -35,8 +45,13 @@ class TorchScriptMoGeModel(nn.Module):
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
         outputs = self.model.forward(image, self.numTokens)
-        points = outputs["points"]
-        mask = outputs["mask"]
+        points = outputs.get("points")
+        mask = outputs.get("mask")
+
+        if points is None:
+            raise RuntimeError("MoGe model forward pass did not return point predictions.")
+        if mask is None:
+            mask = torch.ones(points.shape[:-1], dtype=points.dtype, device=points.device)
 
         if self.applyMask:
             expanded_mask = mask.unsqueeze(-1)
