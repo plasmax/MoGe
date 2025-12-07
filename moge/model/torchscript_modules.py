@@ -666,16 +666,21 @@ class DINOv2EncoderTS(nn.Module):
 
     dim_features: int
     num_features: int
+    intermediate_layers_n: int
 
     def __init__(
         self,
         backbone: str,
-        intermediate_layers: int,
+        intermediate_layers: int,  # Can be int or list, but we convert to int
         dim_out: int,
     ):
         super().__init__()
-        self.intermediate_layers = intermediate_layers
-        self.num_features = intermediate_layers
+        # Handle intermediate_layers being either int or list
+        if isinstance(intermediate_layers, list):
+            self.intermediate_layers_n = len(intermediate_layers)
+        else:
+            self.intermediate_layers_n = intermediate_layers
+        self.num_features = self.intermediate_layers_n
 
         # Create backbone based on name
         if 'vit_small' in backbone or 'vitb14' in backbone.lower():
@@ -720,7 +725,7 @@ class DINOv2EncoderTS(nn.Module):
 
         # Output projections
         projections: List[nn.Module] = []
-        for _ in range(intermediate_layers):
+        for _ in range(self.intermediate_layers_n):
             projections.append(nn.Conv2d(embed_dim, dim_out, kernel_size=1, stride=1, padding=0))
         self.output_projections = nn.ModuleList(projections)
 
@@ -761,7 +766,7 @@ class DINOv2EncoderTS(nn.Module):
         # Get intermediate layers
         features_list = self.backbone.get_intermediate_layers(
             image_14,
-            n=self.intermediate_layers,
+            n=self.intermediate_layers_n,
             return_class_token=True
         )
 
