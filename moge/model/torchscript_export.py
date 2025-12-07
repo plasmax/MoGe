@@ -967,13 +967,25 @@ class MoGeForNukeV2Simple(nn.Module):
         """Build a ConvStack from config dict."""
         from .torchscript_modules import ConvStackTS
 
+        # Get values with proper defaults, handling None values
+        dim_in = config.get('dim_in') or [258, 2, 2, 2, 2]
+        dim_res_blocks = config.get('dim_res_blocks') or [256, 128, 128, 64, 32]
+        dim_out = config.get('dim_out') or [0, 0, 0, 0, 3]
+        resamplers = config.get('resamplers') or ['pixel_shuffle'] * 4
+        dim_times_res_block_hidden = config.get('dim_times_res_block_hidden') or 1
+        num_res_blocks = config.get('num_res_blocks') or [1, 1, 1, 1, 1]
+
+        # Convert None values in lists to 0
+        dim_in = [x if x is not None else 0 for x in dim_in]
+        dim_out = [x if x is not None else 0 for x in dim_out]
+
         return ConvStackTS(
-            dim_in=config.get('dim_in', [258, 2, 2, 2, 2]),
-            dim_res_blocks=config.get('dim_res_blocks', [256, 128, 128, 64, 32]),
-            dim_out=config.get('dim_out', [0, 0, 0, 0, 3]),
-            resamplers=config.get('resamplers', ['pixel_shuffle'] * 4),
-            dim_times_res_block_hidden=config.get('dim_times_res_block_hidden', 1),
-            num_res_blocks=config.get('num_res_blocks', [1, 1, 1, 1, 1]),
+            dim_in=dim_in,
+            dim_res_blocks=dim_res_blocks,
+            dim_out=dim_out,
+            resamplers=resamplers,
+            dim_times_res_block_hidden=dim_times_res_block_hidden,
+            num_res_blocks=num_res_blocks,
         )
 
     def _remap_points(self, points: Tensor) -> Tensor:

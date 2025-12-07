@@ -584,8 +584,9 @@ class ConvStackTS(nn.Module):
         # Input blocks
         input_blocks: List[nn.Module] = []
         for i in range(num_levels):
-            if dim_in[i] > 0:
-                input_blocks.append(nn.Conv2d(dim_in[i], dim_res_blocks[i], kernel_size=1, stride=1, padding=0))
+            dim_in_i = dim_in[i] if dim_in[i] is not None else 0
+            if dim_in_i > 0:
+                input_blocks.append(nn.Conv2d(dim_in_i, dim_res_blocks[i], kernel_size=1, stride=1, padding=0))
             else:
                 input_blocks.append(nn.Identity())
         self.input_blocks = nn.ModuleList(input_blocks)
@@ -615,8 +616,9 @@ class ConvStackTS(nn.Module):
         # Output blocks
         output_blocks: List[nn.Module] = []
         for i in range(num_levels):
-            if dim_out[i] > 0:
-                output_blocks.append(nn.Conv2d(dim_res_blocks[i], dim_out[i], kernel_size=1, stride=1, padding=0))
+            dim_out_i = dim_out[i] if dim_out[i] is not None else 0
+            if dim_out_i > 0:
+                output_blocks.append(nn.Conv2d(dim_res_blocks[i], dim_out_i, kernel_size=1, stride=1, padding=0))
             else:
                 output_blocks.append(nn.Identity())
         self.output_blocks = nn.ModuleList(output_blocks)
