@@ -8,7 +8,6 @@ import utils3d
 
 from ..utils.geometry_torch import (
     weighted_mean, 
-    mask_aware_nearest_resize,
     intrinsics_to_fov
 )
 from ..utils.alignment import (
@@ -69,9 +68,9 @@ def boundary_f1(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor, radius
     )
     neighbor_mask = (neighbor_x ** 2 + neight_y ** 2) <= radius ** 2 + 1e-5
 
-    pred_window = utils3d.torch.sliding_window_2d(pred, window_size=2 * radius + 1, stride=1, dim=(-2, -1))                 # [H, W, 2*R+1, 2*R+1]
-    gt_window = utils3d.torch.sliding_window_2d(gt, window_size=2 * radius + 1, stride=1, dim=(-2, -1))                     # [H, W, 2*R+1, 2*R+1]
-    mask_window = neighbor_mask & utils3d.torch.sliding_window_2d(mask, window_size=2 * radius + 1, stride=1, dim=(-2, -1)) # [H, W, 2*R+1, 2*R+1]
+    pred_window = utils3d.pt.sliding_window_2d(pred, window_size=2 * radius + 1, stride=1, dim=(-2, -1))                 # [H, W, 2*R+1, 2*R+1]
+    gt_window = utils3d.pt.sliding_window_2d(gt, window_size=2 * radius + 1, stride=1, dim=(-2, -1))                     # [H, W, 2*R+1, 2*R+1]
+    mask_window = neighbor_mask & utils3d.pt.sliding_window_2d(mask, window_size=2 * radius + 1, stride=1, dim=(-2, -1)) # [H, W, 2*R+1, 2*R+1]
 
     pred_rel = pred_window / pred[radius:-radius, radius:-radius, None, None]
     gt_rel = gt_window / gt[radius:-radius, radius:-radius, None, None]
@@ -126,8 +125,8 @@ def compute_metrics(
     gt_points = gt['points']
 
     height, width = mask.shape[-2:]
-    _, lr_mask, lr_index = mask_aware_nearest_resize(None, mask, (64, 64), return_index=True)
-    
+    lr_mask, lr_index = utils3d.pt.masked_nearest_resize(mask=mask, size=(64, 64), return_index=True)
+
     only_depth = not any('point' in k for k in pred)
     pred_depth_aligned, pred_points_aligned = None, None
 
@@ -336,7 +335,7 @@ def compute_metrics(
         if pred_points_aligned is not None:
             misc['pred_points'] = pred_points_aligned
         if only_depth:
-            misc['pred_points'] = utils3d.torch.depth_to_points(pred_depth_aligned, intrinsics=gt['intrinsics'])
+            misc['pred_points'] = utils3d.pt.depth_map_to_point_map(pred_depth_aligned, intrinsics=gt['intrinsics'])
         if pred_depth_aligned is not None:
             misc['pred_depth'] = pred_depth_aligned
 
