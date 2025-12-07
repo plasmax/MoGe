@@ -566,6 +566,8 @@ class ResamplerTS(nn.Module):
 class ConvStackTS(nn.Module):
     """ConvStack - TorchScript compatible version."""
 
+    num_levels: int
+
     def __init__(
         self,
         dim_in: List[int],
@@ -580,6 +582,7 @@ class ConvStackTS(nn.Module):
     ):
         super().__init__()
         num_levels = len(dim_res_blocks)
+        self.num_levels = num_levels
 
         # Input blocks
         input_blocks: List[nn.Module] = []
@@ -591,10 +594,12 @@ class ConvStackTS(nn.Module):
                 input_blocks.append(nn.Identity())
         self.input_blocks = nn.ModuleList(input_blocks)
 
-        # Resamplers
+        # Resamplers - add Identity at end to match num_levels for zip iteration
         resampler_modules: List[nn.Module] = []
         for i in range(num_levels - 1):
             resampler_modules.append(ResamplerTS(dim_res_blocks[i], dim_res_blocks[i + 1], scale_factor=2, type_=resamplers[i]))
+        # Add dummy Identity at end so we can use zip (will be unused)
+        resampler_modules.append(nn.Identity())
         self.resamplers = nn.ModuleList(resampler_modules)
 
         # Residual blocks
@@ -623,22 +628,33 @@ class ConvStackTS(nn.Module):
                 output_blocks.append(nn.Identity())
         self.output_blocks = nn.ModuleList(output_blocks)
 
-        self.num_levels = num_levels
-
     def forward(self, in_features: List[Tensor]) -> List[Tensor]:
         out_features: List[Tensor] = []
-        x = torch.zeros(1, device=in_features[0].device, dtype=in_features[0].dtype)  # placeholder
+        x: Optional[Tensor] = None
+        is_first = True
+        level_count = 0
 
-        for i in range(self.num_levels):
-            feature = self.input_blocks[i](in_features[i])
-            if i == 0:
+        # Use zip for TorchScript compatibility (no variable indexing)
+        for in_block, res_block, out_block, resampler, feat in zip(
+            self.input_blocks,
+            self.res_blocks,
+            self.output_blocks,
+            self.resamplers,
+            in_features
+        ):
+            feature = in_block(feat)
+            if is_first:
                 x = feature
+                is_first = False
             else:
                 x = x + feature
-            x = self.res_blocks[i](x)
-            out_features.append(self.output_blocks[i](x))
-            if i < self.num_levels - 1:
-                x = self.resamplers[i](x)
+            x = res_block(x)
+            out_features.append(out_block(x))
+
+            # Apply resampler for all but last level
+            level_count += 1
+            if level_count < self.num_levels:
+                x = resampler(x)
 
         return out_features
 
@@ -777,10 +793,11 @@ class DINOv2EncoderTS(nn.Module):
         x_sum: Optional[Tensor] = None
         cls_token_out: Tensor = torch.zeros(1)  # placeholder
 
-        for i, (feat, clstoken) in enumerate(features_list):
+        # Use zip with projections for TorchScript compatibility (no variable indexing)
+        for proj, (feat, clstoken) in zip(self.output_projections, features_list):
             # feat: (B, N, C) -> reshape to (B, C, H, W)
             feat_2d = feat.permute(0, 2, 1).reshape(batch_size, -1, token_rows, token_cols).contiguous()
-            proj_feat = self.output_projections[i](feat_2d)
+            proj_feat = proj(feat_2d)
             if x_sum is None:
                 x_sum = proj_feat
             else:

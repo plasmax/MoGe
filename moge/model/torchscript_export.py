@@ -850,13 +850,27 @@ class MoGeForNukeSimple(nn.Module):
         # Simple head forward
         x = self.head['proj'](feat)
 
-        # Add UV coordinates and upsample
-        for i, key in enumerate(['upsample1', 'upsample2', 'upsample3']):
-            h, w = x.shape[2], x.shape[3]
-            uv = normalized_view_plane_uv_ts(w, h, aspect_ratio, dtype, device)
-            uv = uv.permute(2, 0, 1).unsqueeze(0).expand(batch_size, -1, -1, -1)
-            x = torch.cat([x, uv], dim=1)
-            x = self.head[key](x)
+        # Add UV coordinates and upsample - unrolled for TorchScript compatibility
+        # Upsample 1
+        h, w = x.shape[2], x.shape[3]
+        uv = normalized_view_plane_uv_ts(w, h, aspect_ratio, dtype, device)
+        uv = uv.permute(2, 0, 1).unsqueeze(0).expand(batch_size, -1, -1, -1)
+        x = torch.cat([x, uv], dim=1)
+        x = self.head['upsample1'](x)
+
+        # Upsample 2
+        h, w = x.shape[2], x.shape[3]
+        uv = normalized_view_plane_uv_ts(w, h, aspect_ratio, dtype, device)
+        uv = uv.permute(2, 0, 1).unsqueeze(0).expand(batch_size, -1, -1, -1)
+        x = torch.cat([x, uv], dim=1)
+        x = self.head['upsample2'](x)
+
+        # Upsample 3
+        h, w = x.shape[2], x.shape[3]
+        uv = normalized_view_plane_uv_ts(w, h, aspect_ratio, dtype, device)
+        uv = uv.permute(2, 0, 1).unsqueeze(0).expand(batch_size, -1, -1, -1)
+        x = torch.cat([x, uv], dim=1)
+        x = self.head['upsample3'](x)
 
         # Final outputs
         h, w = x.shape[2], x.shape[3]
