@@ -61,9 +61,12 @@ class PatchEmbed(nn.Module):
 class Attention(nn.Module):
     """Multi-head attention for ViT-L (16 heads, dim=1024)."""
 
+    scale: float
+
     def __init__(self) -> None:
         super().__init__()
         self.num_heads = 16
+        self.scale = 64 ** -0.5  # head_dim ** -0.5
         self.qkv = nn.Linear(1024, 1024 * 3, bias=True)
         self.proj = nn.Linear(1024, 1024, bias=True)
 
@@ -71,7 +74,12 @@ class Attention(nn.Module):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, 16, 64).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
-        x = F.scaled_dot_product_attention(q, k, v)
+
+        # Manual attention (Nuke doesn't support F.scaled_dot_product_attention)
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        attn = F.softmax(attn, dim=-1)
+        x = torch.matmul(attn, v)
+
         x = x.permute(0, 2, 1, 3).reshape(B, N, 1024)
         x = self.proj(x)
         return x
