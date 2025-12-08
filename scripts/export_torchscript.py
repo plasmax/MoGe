@@ -166,6 +166,174 @@ def create_v2_model(
     resolution_level: int,
 ) -> nn.Module:
     """Create TorchScript model from V2 checkpoint."""
+    encoder_config = model_config['encoder']
+    backbone_name = encoder_config.get('backbone', 'dinov2_vitl14')
+
+    # Use hardcoded ViT-L model for best TorchScript compatibility
+    if 'vitl' in backbone_name.lower() or 'large' in backbone_name.lower():
+        print("  Using hardcoded ViT-L architecture for TorchScript compatibility")
+        return create_v2_vitl_model(model_config, state_dict, output_mode)
+    else:
+        # Fall back to dynamic model for other architectures
+        print(f"  Warning: {backbone_name} not fully supported, trying dynamic model")
+        return create_v2_dynamic_model(model_config, state_dict, output_mode, resolution_level)
+
+
+def create_v2_vitl_model(
+    model_config: dict,
+    state_dict: dict,
+    output_mode: int,
+) -> nn.Module:
+    """Create hardcoded ViT-L model for TorchScript export."""
+    from moge.model.moge_vitl_nuke import MoGeViTL
+
+    model = MoGeViTL(output_mode=output_mode)
+
+    # Map weights from original checkpoint to hardcoded model
+    new_state = {}
+    model_state = model.state_dict()
+
+    for dst_key in model_state.keys():
+        src_key = _map_vitl_key(dst_key)
+        if src_key and src_key in state_dict:
+            src_tensor = state_dict[src_key]
+            dst_tensor = model_state[dst_key]
+            if src_tensor.shape == dst_tensor.shape:
+                new_state[dst_key] = src_tensor
+            else:
+                print(f"  Shape mismatch for {dst_key}: {src_tensor.shape} vs {dst_tensor.shape}")
+                new_state[dst_key] = dst_tensor
+        else:
+            # Keep initialized value
+            new_state[dst_key] = model_state[dst_key]
+
+    missing, unexpected = model.load_state_dict(new_state, strict=False)
+    loaded = len(model_state) - len(missing)
+    print(f"  Loaded {loaded}/{len(model_state)} weights")
+
+    return model
+
+
+def _map_vitl_key(dst_key: str) -> str:
+    """Map hardcoded model key to original checkpoint key."""
+    # Encoder backbone blocks: encoder.backbone.block0 -> encoder.backbone.blocks.0
+    if '.backbone.block' in dst_key:
+        import re
+        match = re.search(r'\.backbone\.block(\d+)\.', dst_key)
+        if match:
+            block_idx = match.group(1)
+            return dst_key.replace(f'.block{block_idx}.', f'.blocks.{block_idx}.')
+
+    # Encoder projections: encoder.proj0 -> encoder.output_projections.0
+    if dst_key.startswith('encoder.proj'):
+        import re
+        match = re.search(r'encoder\.proj(\d+)\.(.+)', dst_key)
+        if match:
+            idx = match.group(1)
+            rest = match.group(2)
+            return f'encoder.output_projections.{idx}.{rest}'
+
+    # Neck mappings
+    if dst_key.startswith('neck.'):
+        return _map_neck_key_vitl(dst_key)
+
+    # Head mappings
+    if dst_key.startswith('points_head.'):
+        return _map_head_key_vitl(dst_key, 'points_head')
+    if dst_key.startswith('mask_head.'):
+        return _map_head_key_vitl(dst_key, 'mask_head')
+
+    # Direct mapping for other keys
+    return dst_key
+
+
+def _map_neck_key_vitl(dst_key: str) -> str:
+    """Map neck keys from hardcoded to original."""
+    import re
+
+    # input0..input4 -> input_blocks.0..4
+    match = re.search(r'neck\.input(\d+)\.(.+)', dst_key)
+    if match:
+        idx = match.group(1)
+        rest = match.group(2)
+        return f'neck.input_blocks.{idx}.{rest}'
+
+    # up0..up3 -> resamplers.0..3
+    match = re.search(r'neck\.up(\d+)\.(up|conv)\.(.+)', dst_key)
+    if match:
+        idx = match.group(1)
+        sublayer = match.group(2)
+        rest = match.group(3)
+        if sublayer == 'up':
+            return f'neck.resamplers.{idx}.conv1.{rest}'
+        else:
+            return f'neck.resamplers.{idx}.conv2.{rest}'
+
+    # res1_0, res1_1 -> res_blocks.1.0, res_blocks.1.1
+    match = re.search(r'neck\.res(\d+)_(\d+)\.(conv\d+)\.(.+)', dst_key)
+    if match:
+        level = match.group(1)
+        block = match.group(2)
+        conv = match.group(3)
+        rest = match.group(4)
+        # ResBlock has conv1, conv2 which map to layers in original ResidualConvBlock
+        if conv == 'conv1':
+            return f'neck.res_blocks.{level}.{block}.layers.2.{rest}'
+        elif conv == 'conv2':
+            return f'neck.res_blocks.{level}.{block}.layers.5.{rest}'
+
+    return dst_key
+
+
+def _map_head_key_vitl(dst_key: str, head_name: str) -> str:
+    """Map head keys from hardcoded to original."""
+    import re
+
+    # input0..input4 -> input_blocks.0..4
+    match = re.search(rf'{head_name}\.input(\d+)\.(.+)', dst_key)
+    if match:
+        idx = match.group(1)
+        rest = match.group(2)
+        return f'{head_name}.input_blocks.{idx}.{rest}'
+
+    # up0..up3 -> resamplers.0..3
+    match = re.search(rf'{head_name}\.up(\d+)\.(up|conv)\.(.+)', dst_key)
+    if match:
+        idx = match.group(1)
+        sublayer = match.group(2)
+        rest = match.group(3)
+        if sublayer == 'up':
+            return f'{head_name}.resamplers.{idx}.conv1.{rest}'
+        else:
+            return f'{head_name}.resamplers.{idx}.conv2.{rest}'
+
+    # res1, res2, res3 -> res_blocks.1.0, res_blocks.2.0, res_blocks.3.0
+    match = re.search(rf'{head_name}\.res(\d+)\.(conv\d+)\.(.+)', dst_key)
+    if match:
+        level = match.group(1)
+        conv = match.group(2)
+        rest = match.group(3)
+        if conv == 'conv1':
+            return f'{head_name}.res_blocks.{level}.0.layers.2.{rest}'
+        elif conv == 'conv2':
+            return f'{head_name}.res_blocks.{level}.0.layers.5.{rest}'
+
+    # output -> output_blocks.4
+    match = re.search(rf'{head_name}\.output\.(.+)', dst_key)
+    if match:
+        rest = match.group(1)
+        return f'{head_name}.output_blocks.4.{rest}'
+
+    return dst_key
+
+
+def create_v2_dynamic_model(
+    model_config: dict,
+    state_dict: dict,
+    output_mode: int,
+    resolution_level: int,
+) -> nn.Module:
+    """Create dynamic model (fallback for non-ViT-L)."""
     from moge.model.torchscript_export import MoGeForNukeV2Simple
 
     encoder_config = model_config['encoder']
@@ -176,22 +344,6 @@ def create_v2_model(
     remap_output = model_config.get('remap_output', 'linear')
     num_tokens_range = model_config.get('num_tokens_range', [1200, 3600])
 
-    # Extract encoder architecture
-    backbone_name = encoder_config.get('backbone', 'dinov2_vitl14')
-    if 'vitl' in backbone_name.lower() or 'large' in backbone_name.lower():
-        embed_dim = 1024
-        depth = 24
-        num_heads = 16
-    elif 'vitg' in backbone_name.lower() or 'giant' in backbone_name.lower():
-        embed_dim = 1536
-        depth = 40
-        num_heads = 24
-    else:
-        embed_dim = 768
-        depth = 12
-        num_heads = 12
-
-    # Create model
     model = MoGeForNukeV2Simple(
         encoder_config=encoder_config,
         neck_config=neck_config,
@@ -203,7 +355,6 @@ def create_v2_model(
         output_mode=output_mode,
     )
 
-    # Load weights
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
         print(f"Note: Some keys were not loaded:")
